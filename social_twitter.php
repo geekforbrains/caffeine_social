@@ -40,10 +40,15 @@ class Social_Twitter {
     /**
      * TODO
      */
-    public function oauth()
+    public function oauth($oauth_token = null, $oauth_secret = null)
     {
         Load::asset('social', 'twitteroauth.php');
-        return new TwitterOAuth(Config::get('social.twitter_consumer_key'), Config::get('social.twitter_consumer_secret'));
+        return new TwitterOAuth(
+            Config::get('social.twitter_consumer_key'), 
+            Config::get('social.twitter_consumer_secret'),
+            $oauth_token,
+            $oauth_secret
+        );
     }
 
     /**
@@ -52,7 +57,7 @@ class Social_Twitter {
     public function sendToTwitterForAuth()
     {
         $conn = $this->oauth();
-        $request = $conn->getRequestToken(Config::get('social.twitter_callback_url'));
+        $request = $conn->getRequestToken(Url::to('social/twitter/auth/callback', true));
 
         $_SESSION['oauth_token'] = $request['oauth_token'];
         $_SESSION['oauth_token_secret'] = $request['oauth_token_secret'];
@@ -66,6 +71,86 @@ class Social_Twitter {
             default:
                 die('Could not connect to Twitter!'); // TODO Actual error page or message
         }
+    }
+
+    public function saveCallbackFromTwitter()
+    {
+        if(!empty($_GET['oauth_verifier']) && !empty($_SESSION['oauth_token']) && !empty($_SESSION['oauth_token_secret']))
+        {
+            // TwitterOAuth instance, with two new parameters we got in twitter_login.php
+            Load::asset('social', 'twitteroauth.php');
+
+            $twitteroauth = new TwitterOAuth(
+                Config::get('social.twitter_consumer_key'), 
+                Config::get('social.twitter_consumer_secret'),
+                $_SESSION['oauth_token'], 
+                $_SESSION['oauth_token_secret']
+            );
+
+            // Let's request the access token
+            $access_token = $twitteroauth->getAccessToken($_GET['oauth_verifier']);
+
+            // Save it in a session var
+            $_SESSION['access_token'] = $access_token;
+
+            // Let's get the user's info
+            $user_info = $twitteroauth->get('account/verify_credentials');
+
+            if(isset($user_info->error))
+            {
+                die('error with user.');
+            }
+            else
+            {
+                $record = Social::oauth()
+                    ->where('oauth_provider', '=', 'twitter')
+                    ->andWhere('oauth_uid', '=', $user_info->id)
+                    ->limit(1)
+                    ->first();
+
+                // Account doesn't exist, create it
+                if(!$record)
+                {
+                    $id = Social::oauth()->insert(array(
+                        'oauth_provider' => 'twitter',
+                        'oauth_uid' => $user_info->id,
+                        'oauth_token' => $access_token['oauth_token'],
+                        'oauth_secret' => $access_token['oauth_token_secret'],
+                        'username' => $user_info->screen_name
+                    ));
+
+                    // TODO Test for insert failures
+                }
+
+                // Account already exists, update tokens
+                else
+                {
+                    $status = Social::oauth()
+                        ->where('oauth_provider', '=', 'twitter')
+                        ->andWhere('oauth_uid', '=', $user_info->id)
+                        ->update(array(
+                            'oauth_token' => $access_token['oauth_token'],
+                            'oauth_secret' => $access_token['oauth_token_secret']
+                        ));
+
+                    // TODO Test for insert failures
+                }
+            }
+        } 
+        else
+            die('didnt get all the details i needed.'); // TODO Send this to an error page!!!!
+    }
+
+    /**
+     * Returns an authorized TwitterOAuth instance based on the username given. The username must
+     * have valid auth tokens in the database otherwise boolean false is returned.
+     */
+    public function getAuthInstance($username)
+    {
+        if($record = Social::oauth()->where('username', '=', $username)->first())
+            return $this->oauth($record->oauth_token, $record->oauth_secret);
+
+        return false;
     }
 
 }
